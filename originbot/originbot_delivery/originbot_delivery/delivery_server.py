@@ -34,9 +34,11 @@ from originbot_msgs.srv import NavigateToStation
 from originbot_msgs.srv import ParamsEntry
 from originbot_msgs.srv import RouteGraph
 from originbot_msgs.srv import SaveMap
+from originbot_msgs.srv import SetAuthority
 from originbot_msgs.srv import SetPose
 from originbot_msgs.srv import StationEntry
 
+from .robot_identity import AUTHORITY_VALUES, load_identity
 from .robot_params import ParamsStore
 
 
@@ -580,6 +582,12 @@ class DeliveryServer(Node):
         self.route_store = RouteStore(
             str(config_dir / "routes.json"), {"nodes": [], "edges": []}
         )
+        # 车队身份 + 控制权（阶段 0）。per-robot 配置与"全车队共用"的配置束
+        # （map/stations/routes）刻意分开：这里放"这辆车是谁、回桩在哪、默认要什么控制权"。
+        self.identity = load_identity(config_dir / "robot_identity.json")
+        self.robot_id = self.identity.get("robot_id", "")
+        self.authority = self.identity.get("default_authority", "debug")
+        self.authority_lock = threading.Lock()
         # 当前导航任务使用的模式：free=Nav2 自由避障 / route=轨道路网。
         # 用于取消导航时分发到正确的执行器，完成/取消后置回 None。
         self.active_nav_mode = None
@@ -624,6 +632,17 @@ class DeliveryServer(Node):
         self.initial_pose_pub = self.create_publisher(
             PoseWithCovarianceStamped, "/initialpose", initial_pose_qos
         )
+        # 控制权单一真值：latched(TRANSIENT_LOCAL) 发布，route_follower 与 Web 端
+        # 据此互斥 /cmd_vel 写者；latched 让新连接的订阅端立刻拿到当前值。
+        authority_qos = QoSProfile(
+            reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,
+            history=HistoryPolicy.KEEP_LAST,
+            depth=1,
+        )
+        self.authority_pub = self.create_publisher(
+            String, "/delivery/authority", authority_qos
+        )
         self.nav_state_client = self.create_client(GetState, "/bt_navigator/get_state")
         self.nav_client = ActionClient(self, NavigateToPose, "navigate_to_pose")
         self.nav_goal_handle = None
@@ -646,6 +665,7 @@ class DeliveryServer(Node):
         self.pending_pose_lock = threading.Lock()
         self.pending_user_pose = None
         self.pending_map_odom = None
+        self.pending_boot_pose = None
         self._initial_pose_guard = threading.Lock()
         # ArUco 视觉定位开关：默认关闭（无 ArUco 码时空转占约 2 核 CPU）
         # 需要时通过环境变量 ENABLE_ARUCO=1 开启
@@ -679,10 +699,25 @@ class DeliveryServer(Node):
         self.create_service(RouteGraph, "/delivery/route", self.route_callback)
         self.create_service(SaveMap, "/delivery/save_map", self.save_map_callback)
         self.create_service(SetPose, "/delivery/set_pose", self.set_pose_callback)
+        self.create_service(
+            SetAuthority, "/delivery/set_authority", self.set_authority_callback
+        )
         self.create_service(Trigger, "/delivery/shutdown", self.shutdown_callback)
         self.create_service(ParamsEntry, "/delivery/params", self.params_callback)
 
-        self.get_logger().info("送餐任务服务已就绪")
+        # 上电即广播当前控制权（latched，晚起的 route_follower / Web 也会立刻收到）。
+        self._publish_authority(self.authority)
+        boot_pose = self.identity.get("boot_pose")
+        if boot_pose:
+            self.pending_boot_pose = dict(boot_pose)
+        self.get_logger().info(
+            f"送餐任务服务已就绪 robot_id={self.robot_id or '（未分配）'} "
+            f"控制权={self.authority} "
+            f"boot_pose={'已配置' if boot_pose else '未配置'}")
+        if not boot_pose and self.identity.get("robot_id"):
+            self.get_logger().warning(
+                "本车未配置 boot_pose：冷启动无自动初始位姿，"
+                "需在 Web 设定位姿或用 set_robot_id --capture-boot-pose 记录回桩位")
 
     def load_state(self):
         try:
@@ -847,9 +882,19 @@ class DeliveryServer(Node):
                         self.get_logger().warning(
                             "建图坐标系已过期(>600s)，请在 Web 端地图上手动设定位姿"
                         )
+                if pose is None and self.pending_boot_pose is not None:
+                    # 无 ArUco 时的冷启动位姿来源：本车回桩位（per-robot 配置，不设过期，
+                    # 因为它是常置的部署参数而非一次性会话数据）。优先级最低：人工设位与
+                    # 同会话建图交接都更准确。
+                    bp = self.pending_boot_pose
+                    pose = (bp["x"], bp["y"], bp["yaw"])
+                    self.publish_status(
+                        "使用本车回桩位姿 boot_pose 注入 AMCL 初始位姿 "
+                        f"(robot_id={self.robot_id or '未分配'})")
             if pose is None:
                 self.publish_status(
                     "无可用初始位姿，请在 Web 端地图上手动设定位姿后重试"
+                    "（可用 set_robot_id --capture-boot-pose 记录回桩位以自动注入）"
                 )
                 return
             # 重复发布直到 AMCL 开始输出位姿（收到初始位姿并收敛后才会发布 map→odom）
@@ -917,6 +962,40 @@ class DeliveryServer(Node):
         response.message = (
             f"初始位姿已设置 (x={x:.3f}, y={y:.3f}, yaw={yaw:.3f})"
         )
+        return response
+
+    def _publish_authority(self, authority):
+        msg = String()
+        msg.data = authority
+        self.authority_pub.publish(msg)
+
+    def set_authority_callback(self, request, response):
+        """设置/查询控制权。authority 留空表示只查询当前值（供 Web 主动拉取）。"""
+        wanted = (request.authority or "").strip().lower()
+        response.authority = self.authority
+        if wanted == "":
+            response.success = True
+            response.message = f"当前控制权：{self.authority}"
+            return response
+        if wanted not in AUTHORITY_VALUES:
+            response.success = False
+            response.message = f"未知控制权：{wanted}（支持 controlled / debug）"
+            return response
+        if wanted == self.authority:
+            response.success = True
+            response.message = f"控制权已是 {wanted}"
+            self._publish_authority(wanted)  # 幂等重发，便于订阅端重新对齐
+            return response
+        with self.authority_lock:
+            self.authority = wanted
+        self._publish_authority(wanted)
+        self.publish_status(
+            "控制权已切换为受控（本地手动控制被禁止）"
+            if wanted == "controlled"
+            else "控制权已切换为本地接管（中心不再派发任务）")
+        response.success = True
+        response.authority = wanted
+        response.message = f"控制权已切换为 {wanted}"
         return response
 
     def shutdown_callback(self, request, response):
@@ -1207,6 +1286,13 @@ class DeliveryServer(Node):
         if mode not in ("free", "route"):
             response.accepted = False
             response.message = f"未知导航方式：{mode}（支持 free / route）"
+            return response
+        if self.authority == "controlled" and mode == "free":
+            # 生产采用轨道路网：受控态只允许 route，自由导航会绕过路网语义
+            response.accepted = False
+            response.message = (
+                "受控模式下只允许轨道路线导航（free 已拒绝）；"
+                "确需自由导航请先接管控制权（debug）")
             return response
         station = self.station_store.find(request.station_name)
         if station is None:

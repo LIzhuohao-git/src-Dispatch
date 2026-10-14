@@ -33,6 +33,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "srv/ParamsEntry.srv"
   "srv/RouteGraph.srv"
   "srv/SaveMap.srv"
+  "srv/SetAuthority.srv"
   "srv/SetPose.srv"
   "srv/SetInt32.srv"
   "srv/StationEntry.srv"

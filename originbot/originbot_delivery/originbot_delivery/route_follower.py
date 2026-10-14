@@ -39,6 +39,8 @@ from tf2_ros import Buffer, TransformListener
 
 from originbot_msgs.srv import CancelNavigation, NavigateToStation
 
+from .robot_identity import default_identity_path, load_identity
+
 
 def wrap_angle(angle):
     """归一化到 (-pi, pi]。"""
@@ -255,15 +257,17 @@ def _project_polyline(pts, x, y):
 def plan_route(graph, pose, station_name, on_ramp_max, nearest_node_max):
     """从位姿 pose 规划到 station_name 对应节点的路网路径。
 
-    返回 (points, start_desc, error)：成功时 points 为世界系途经点序列
-    （首点为当前位姿），error 为空；失败时 points 为 None，error 给出原因。
+    返回 (points, start_desc, error, plan)：成功时 points 为世界系途经点序列
+    （首点为当前位姿），error 为空，plan 为将依次经过的节点/边标记序列
+    （形如 ["n5","n5->n2","n2","n2->n8","n8"]，供中心预占资源）；
+    失败时 points 为 None，error 给出原因，plan 为 []。
     模块级纯函数，便于脱离 ROS 做单元测试。
     """
     if not graph.nodes:
-        return None, "", "路网为空，请先在 Web 端绘制路网"
+        return None, "", "路网为空，请先在 Web 端绘制路网", []
     goal_node_name, _ = graph.find_goal_node(station_name)
     if goal_node_name is None:
-        return None, "", f"路网中找不到目标节点 {station_name}"
+        return None, "", f"路网中找不到目标节点 {station_name}", []
 
     x, y, _ = pose
     proj = graph.project_onto_edges(x, y)
@@ -287,7 +291,7 @@ def plan_route(graph, pose, station_name, on_ramp_max, nearest_node_max):
         if dist > nearest_node_max:
             return None, "", (
                 f"当前位置距路网过远（最近节点 {name} 距离 {dist:.2f} 米，"
-                f"上限 {nearest_node_max:.2f} 米），请先手动把车挪到路网附近")
+                f"上限 {nearest_node_max:.2f} 米），请先手动把车挪到路网附近"), []
         sources.append((name, dist, [(node["x"], node["y"])]))
         start_desc = f"从最近节点 {name} 直线上车（{dist:.2f} 米）"
 
@@ -315,7 +319,7 @@ def plan_route(graph, pose, station_name, on_ramp_max, nearest_node_max):
                 heapq.heappush(heap, (nd, v))
 
     if goal_node_name not in dist:
-        return None, "", f"路网不连通：{station_name} 无法到达"
+        return None, "", f"路网不连通：{station_name} 无法到达", []
 
     # 还原节点序列对应的边序列
     edge_sequence = []
@@ -347,8 +351,19 @@ def plan_route(graph, pose, station_name, on_ramp_max, nearest_node_max):
         points.append((goal_node["x"], goal_node["y"]))
 
     if len(points) < 2:
-        return None, "", "规划结果为空"
-    return points, start_desc, ""
+        return None, "", "规划结果为空", []
+
+    # 把还原出的边序列展开成 "节点 / a->b" 交替标记，供中心按序预占资源（§5.2 plan）
+    plan = []
+    if edge_sequence:
+        plan.append(edge_sequence[0][0])
+        for prev, cur, _idx in edge_sequence:
+            plan.append(f"{prev}->{cur}")
+            plan.append(cur)
+    else:
+        # 源节点即目标节点，无中间边
+        plan.append(goal_node_name)
+    return points, start_desc, "", plan
 
 
 class RouteFollower(Node):
@@ -378,6 +393,12 @@ class RouteFollower(Node):
         self.declare_parameter("on_ramp_max", 0.60)       # 距最近路网边的最大上车距离
         self.declare_parameter("nearest_node_max", 1.50)  # 无边上投影时距最近节点上限
         self.declare_parameter("end_decel", 0.5)          # 到点前减速 m/s^2
+        # 控制权软门控：authority==debug（人工手动已接管）时本节点让出 /cmd_vel，
+        # 保持任务但不运动；回到 controlled 自动续走。缺省按 controlled，兼容无
+        # delivery_server/authority 发布者的旧部署（行为与今天一致）。
+        self.declare_parameter("authority_topic", "/delivery/authority")
+        self.declare_parameter("report_topic", "/route/report")
+        self.declare_parameter("report_rate", 2.0)        # 结构化遥测上报频率 Hz
 
         routes_file = self.get_parameter("routes_file").value
         if not routes_file:
@@ -418,11 +439,15 @@ class RouteFollower(Node):
         self.goal_yaw = 0.0
         self.path = None             # PolylinePath
         self.plan_pending = None     # (station_name,) TF 可用后补规划
+        self.plan = []               # 本次任务将依次经过的节点/边标记（供中心预占）
         self.cur_v = 0.0
         self.cur_w = 0.0
         self.blocked = False
+        self.blocked_reason = ""
         self.blocked_since = 0.0
         self.clear_since = 0.0
+        self.authority = "controlled"   # 由 /delivery/authority 更新；debug=人工已接管
+        self.yielded = False            # 是否正处于让出 /cmd_vel 状态
         self.last_status_text = ""
         self.last_status_time = 0.0
         self.last_progress_time = 0.0
@@ -445,17 +470,30 @@ class RouteFollower(Node):
         )
         self.path_pub = self.create_publisher(PathMsg, "/route/path", path_qos)
         self.status_pub = self.create_publisher(String, "/route/status", 10)
+        # 结构化上报（JSON），供未来车端 agent 直接转 MQTT 遥测；与 /route/status
+        # 的人类可读文本并行，见 docs/fleet-dispatch-design.md §5.2
+        self.report_pub = self.create_publisher(String, self.get_parameter("report_topic").value, 10)
 
         self.create_subscription(
             LaserScan, self.get_parameter("scan_topic").value, self.scan_callback, 10)
+        self.create_subscription(
+            String, self.get_parameter("authority_topic").value,
+            self.authority_callback, path_qos)
         self.create_service(
             NavigateToStation, "/route/navigate", self.navigate_callback)
         self.create_service(
             CancelNavigation, "/route/cancel", self.cancel_callback)
 
         self.timer = self.create_timer(self.control_period, self.tick)
+        self.report_timer = self.create_timer(
+            1.0 / max(0.2, float(self.get_parameter("report_rate").value)),
+            self.publish_report)
+        self.robot_id = load_identity(
+            os.path.join(os.path.dirname(os.path.abspath(self.routes_file)),
+                         "robot_identity.json")).get("robot_id", "")
         self.get_logger().info(
-            f"路网跟随器就绪：路网文件 {self.routes_file}"
+            f"路网跟随器就绪 robot_id={self.robot_id or '（未分配）'} "
+            f"路网文件 {self.routes_file}"
             f"（节点 {len(self.graph.nodes)}，边 {len(self.graph.edges)}）")
 
     # ================= ROS 回调 =================
@@ -463,6 +501,51 @@ class RouteFollower(Node):
     def scan_callback(self, msg):
         self.latest_scan = msg
         self.latest_scan_time = time.monotonic()
+
+    def authority_callback(self, msg):
+        value = (msg.data or "").strip().lower()
+        if value in ("controlled", "debug") and value != self.authority:
+            self.authority = value
+            if value == "debug":
+                self.get_logger().warning(
+                    "控制权切到 debug（人工接管），路网跟随器让出 /cmd_vel")
+            else:
+                self.get_logger().info("控制权回到 controlled，路网跟随器可继续")
+
+    def publish_report(self):
+        """结构化上报（JSON）：mode/blocked/plan/占用，供车端 agent 转 MQTT 遥测。"""
+        with self.state_lock:
+            state = self.state
+            goal_active = self.goal_active
+            goal = self.goal_name
+            blocked = self.blocked
+            blocked_reason = self.blocked_reason
+            waited = (time.monotonic() - self.blocked_since) if blocked else 0.0
+            plan = list(self.plan)
+            remaining = 0.0
+            if goal_active and self.path is not None:
+                pose = self._lookup_pose()
+                if pose is not None:
+                    s, _ = self.path.project(pose[0], pose[1])
+                    remaining = max(0.0, self.path.total - s)
+        report = {
+            "robot_id": self.robot_id,
+            "authority": self.authority,
+            "yielded": self.yielded,
+            "goal_active": goal_active,
+            "state": state,
+            "goal": goal,
+            "remaining_m": round(remaining, 3),
+            "plan": plan,
+            "blocked": {
+                "waiting": bool(blocked or self.yielded),
+                "reason": "manual_takeover" if self.yielded else blocked_reason,
+                "since_sec": round(waited, 1),
+            },
+        }
+        msg = String()
+        msg.data = json.dumps(report, ensure_ascii=False)
+        self.report_pub.publish(msg)
 
     def navigate_callback(self, request, response):
         station_name = (request.station_name or "").strip()
@@ -486,8 +569,11 @@ class RouteFollower(Node):
             self.goal_node_name = node_name
             self.goal_yaw = float(node.get("yaw", 0.0))
             self.path = None
+            self.plan = []
             self.plan_pending = True
             self.blocked = False
+            self.blocked_reason = ""
+            self.yielded = False
             self.cur_v = 0.0
             self.cur_w = 0.0
             self.tf_fail_notified = False
@@ -520,10 +606,25 @@ class RouteFollower(Node):
 
     def tick(self):
         if not self.goal_active:
+            self.yielded = False
             return
         if self.cancel_requested:
             self._finish("CANCELLED", "导航已取消（轨道路线）")
             return
+
+        # 控制权软门控：人工接管（debug）时让出 /cmd_vel，保持任务但不运动。
+        # 回到 controlled 后自动从当前状态续走（不重复起步转向）。
+        if self.authority == "debug":
+            if not self.yielded:
+                self.yielded = True
+                self._status("路网导航：人工已接管（debug），暂停沿路网行驶，让出速度控制权")
+            self._publish_zero()
+            return
+        if self.yielded:
+            self.yielded = False
+            self.blocked = False
+            self.clear_since = 0.0
+            self._status(f"路网导航：控制权回到受控，继续前往 {self.goal_name}")
 
         pose = self._lookup_pose()
         if pose is None:
@@ -569,6 +670,7 @@ class RouteFollower(Node):
             if not self.blocked:
                 self.blocked = True
                 self.blocked_since = now
+                self.blocked_reason = "obstacle"
                 self._status(
                     f"路网导航：前方 {front_distance:.2f} 米处有障碍，停车等待消除（无限等待）")
             elif now - self.last_status_time >= 15.0:
@@ -589,6 +691,7 @@ class RouteFollower(Node):
                 self.clear_since = now
             elif now - self.clear_since >= self.resume_clear_sec:
                 self.blocked = False
+                self.blocked_reason = ""
                 self.clear_since = 0.0
                 self._status(f"路网导航：障碍已消除，继续前往 {self.goal_name}")
             else:
@@ -673,14 +776,15 @@ class RouteFollower(Node):
     # ================= 规划 =================
 
     def _plan(self, pose):
-        """从当前位姿规划到目标节点的路网路径。成功后填充 self.path。"""
+        """从当前位姿规划到目标节点的路网路径。成功后填充 self.path / self.plan。"""
         self.graph.reload_if_changed()
-        points, start_desc, error = plan_route(
+        points, start_desc, error, plan = plan_route(
             self.graph, pose, self.goal_name,
             self.on_ramp_max, self.nearest_node_max)
         if points is None:
             return False, error
         self.path = PolylinePath(points)
+        self.plan = plan
         self.get_logger().info(
             f"路网导航规划完成：{self.goal_name}，{self.path.total:.2f} 米，{start_desc}")
         return True, ""
@@ -757,6 +861,10 @@ class RouteFollower(Node):
             self.goal_active = False
             self.cancel_requested = False
             self.path = None
+            self.plan = []
+            self.blocked = False
+            self.blocked_reason = ""
+            self.yielded = False
 
     def _status(self, text):
         msg = String()

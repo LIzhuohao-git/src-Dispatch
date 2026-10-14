@@ -7,6 +7,7 @@ const state = {
   stations: [],
   markers: [],
   manualMode: false,
+  authority: "controlled",           // /delivery/authority：controlled=受控 / debug=人工接管
   pressedKeys: new Set(),
   controlMode: "keyboard",              // 手动控制输入方式：keyboard / joystick
   joystick: { active: false, x: 0, y: 0 }, // 遥杆归一化偏移：x 右+，y 下+
@@ -218,6 +219,17 @@ function connect() {
 }
 
 function subscribeToTopics() {
+  // 控制权徽标：latched 话题，连上即拿到当前值，受控时提示手动模式会接管
+  const authorityTopic = new ROSLIB.Topic({
+    ros: state.ros,
+    name: "/delivery/authority",
+    messageType: "std_msgs/msg/String",
+  });
+  authorityTopic.subscribe((message) => {
+    state.authority = message.data;
+    updateAuthorityBadge();
+  });
+
   const mapTopic = new ROSLIB.Topic({
     ros: state.ros,
     name: "/map",
@@ -734,6 +746,28 @@ function publishCmdVel(linearX, angularZ) {
   });
 }
 
+function updateAuthorityBadge() {
+  const badge = document.getElementById("authority-badge");
+  if (!badge) return;
+  const controlled = state.authority === "controlled";
+  badge.textContent = controlled ? "控制权：受控" : "控制权：人工接管";
+  badge.className = `badge ${controlled ? "online" : "offline"}`;
+}
+
+async function requestAuthority(value) {
+  // best-effort：无 delivery_server 或旧后端未实现该服务时忽略，不阻塞手动流程
+  if (!state.connected) return;
+  try {
+    await callService("/delivery/set_authority", "originbot_msgs/srv/SetAuthority", {
+      authority: value,
+    });
+    state.authority = value;
+    updateAuthorityBadge();
+  } catch (error) {
+    log(`设置控制权(${value})未执行：${error.message || error}`);
+  }
+}
+
 function stopManualTimer() {
   if (manualTimer) {
     clearInterval(manualTimer);
@@ -750,12 +784,15 @@ function updateManualState() {
 }
 
 function disableManualControl() {
+  const wasManual = state.manualMode;
   state.manualMode = false;
   state.pressedKeys.clear();
   resetJoystick();
   stopManualTimer();
   publishCmdVel(0, 0);
   updateManualState();
+  // 退出手动 → 交还控制权，route_follower 恢复沿路网行驶（仅此前确实在手动时）
+  if (wasManual) requestAuthority("controlled");
 }
 
 async function enableManualControl() {
@@ -765,6 +802,8 @@ async function enableManualControl() {
   }
   state.manualMode = true;
   updateManualState();
+  // 进入手动 = 人工接管：先申请 debug 控制权，让 route_follower 让出 /cmd_vel
+  await requestAuthority("debug");
   try {
     await callService(
       "/delivery/cancel_navigation",

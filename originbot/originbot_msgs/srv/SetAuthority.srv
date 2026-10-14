@@ -1,0 +1,10 @@
+# 设置/查询控制权（authority）。
+# authority:
+#   controlled - 受控：中心/自动化可派发路线任务；本地 Web 手动控制被禁止
+#   debug      - 本地接管：Web 键盘/遥杆可用；路网跟随器交出 /cmd_vel 控制权
+#   留空        - 只查询当前 authority，不修改（response.authority 返回当前值）
+string authority
+---
+bool success
+string message
+string authority

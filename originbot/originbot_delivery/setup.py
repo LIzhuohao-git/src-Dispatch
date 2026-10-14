@@ -27,6 +27,7 @@ setup(
             "map_viewer = originbot_delivery.map_viewer:main",
             "reregister_markers = originbot_delivery.reregister_markers:main",
             "route_follower = originbot_delivery.route_follower:main",
+            "set_robot_id = originbot_delivery.robot_identity:main",
             "web_server = originbot_delivery.web_server:main",
         ],
     },
