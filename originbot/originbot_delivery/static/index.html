@@ -1,0 +1,251 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>OriginBot 送餐机器人控制台</title>
+  <link rel="stylesheet" href="style.css?v=20260923d">
+  <script src="https://cdn.jsdelivr.net/npm/roslib@1.4.0/build/roslib.min.js"></script>
+  <script src="layout.js?v=20260922a"></script>
+</head>
+<body>
+  <header>
+    <div>
+      <h1>OriginBot 送餐机器人</h1>
+      <a class="nav-link" href="params.html">参数配置</a>
+      <span id="connection-state" class="badge offline">离线</span>
+    </div>
+    <div class="header-actions">
+      <button type="button" id="shutdown" class="danger-button shutdown-top"
+              title="关机前建议先保存地图；点击后需确认，指示灯熄灭前请勿断电">⏻ 安全关机</button>
+      <form id="connection-form">
+        <input id="ros-host" value="" aria-label="ROS Bridge 地址">
+        <input id="ros-port" value="9090" type="number" aria-label="ROS Bridge 端口">
+        <button type="submit">连接</button>
+      </form>
+    </div>
+  </header>
+
+  <main>
+    <section class="panel map-panel">
+      <h2>地图</h2>
+      <canvas id="map-canvas" width="640" height="480"></canvas>
+      <div class="legend">鼠标滚轮缩放，按住左键拖动平移，双击复位视图</div>
+      <div class="inline-form">
+        <select id="map-select" aria-label="选择地图"></select>
+        <button id="open-map">打开地图</button>
+        <button id="close-map">关闭地图</button>
+        <button type="button" id="pose-pick" class="pick-button" data-pick-target="pose">设定位姿</button>
+      </div>
+      <div class="legend">绿色：空闲区域；黑色：障碍物；红色：机器人；蓝色：站点（含名称与朝向）；橙色：ArUco 标志位；绿色点：激光雷达点云</div>
+      <div id="pick-hint" class="legend pick-hint">点击“地图取点”后，可在地图上点击定位并拖拽设置朝向</div>
+      <div class="inline-form">
+        <button type="button" id="toggle-scan">激光点云：开</button>
+      </div>
+    </section>
+
+    <div class="map-side">
+      <section class="panel camera-panel">
+        <h2>摄像头</h2>
+        <div class="camera-viewport">
+          <img id="camera-image" alt="摄像头画面">
+          <div id="camera-placeholder" class="camera-placeholder">
+            <span>等待画面：请先启动底盘与 ArUco 定位</span>
+          </div>
+          <div id="aruco-toast" class="aruco-toast hidden"></div>
+        </div>
+        <div class="camera-status">
+          <span id="aruco-detection-state" class="badge offline">未识别</span>
+          <span id="aruco-detection-detail">等待 ArUco 检测</span>
+        </div>
+      </section>
+
+      <section class="panel navigation-panel">
+        <h2>导航</h2>
+        <div class="inline-form">
+          <label for="nav-mode">导航方式</label>
+          <select id="nav-mode" aria-label="导航方式">
+            <option value="free">自由避障（Nav2）</option>
+            <option value="route" selected>轨道路线（沿路网）</option>
+          </select>
+        </div>
+        <div class="inline-form">
+          <select id="station-select"></select>
+          <button id="navigate">开始导航</button>
+          <button id="cancel-navigation">取消导航</button>
+        </div>
+        <div class="legend">轨道路线模式：沿“路网”面板绘制的拓扑路线行驶，遇障碍停车等待，消除后继续，到站后自动对准朝向</div>
+      </section>
+
+      <section class="panel system-panel">
+        <h2>系统</h2>
+        <div class="button-grid">
+          <button data-subsystem="base" data-enable="true">启动底盘</button>
+          <button data-subsystem="base" data-enable="false">停止底盘</button>
+          <button data-subsystem="localization" data-enable="true">启动定位</button>
+          <button data-subsystem="localization" data-enable="false">停止定位</button>
+          <button data-subsystem="aruco" data-enable="true">启动 ArUco</button>
+          <button data-subsystem="aruco" data-enable="false">停止 ArUco</button>
+          <button data-subsystem="mapping" data-enable="true">启动建图</button>
+          <button data-subsystem="mapping" data-enable="false">停止建图</button>
+          <button data-subsystem="navigation" data-enable="true">启动导航</button>
+          <button data-subsystem="navigation" data-enable="false">停止导航</button>
+        </div>
+        <div class="inline-form">
+          <label for="mapping-algorithm">建图算法</label>
+          <select id="mapping-algorithm">
+            <option value="cartographer">Cartographer</option>
+            <option value="slam_toolbox">SLAM Toolbox</option>
+          </select>
+        </div>
+        <div class="inline-form">
+          <input id="map-name" value="delivery_map" aria-label="地图名称">
+          <button id="save-map">保存地图</button>
+        </div>
+      </section>
+    </div>
+
+    <section class="panel keyboard-panel">
+      <h2>手动控制</h2>
+      <div class="manual-controls">
+        <label>
+          线速度
+          <input id="manual-linear" type="number" step="0.05" min="0" max="1" value="0.2">
+        </label>
+        <label>
+          角速度
+          <input id="manual-angular" type="number" step="0.05" min="0" max="1.5" value="0.5">
+        </label>
+        <button id="manual-mode">进入手动模式</button>
+      </div>
+      <div class="control-mode-switch" id="control-mode-switch">
+        <button type="button" id="control-mode-keyboard" class="active">⌨ 键盘控制</button>
+        <button type="button" id="control-mode-joystick">🕹 遥杆控制</button>
+      </div>
+      <div class="keypad-hint" id="keyboard-hint">
+        <span class="keycap">W</span>
+        <span class="keycap">A</span>
+        <span class="keycap">S</span>
+        <span class="keycap">D</span>
+        或方向键移动，<span class="keycap">空格</span>急停
+      </div>
+      <div class="joystick-hint hidden" id="joystick-hint">
+        按住圆盘拖动遥杆控制小车：上/下前进后退，左/右转向；松开自动停止。速度上限取上方线/角速度。
+      </div>
+      <div id="joystick-pad" class="joystick-pad hidden" aria-label="虚拟遥杆">
+        <div class="joystick-ring"></div>
+        <div id="joystick-knob" class="joystick-knob"></div>
+      </div>
+      <div id="manual-state" class="manual-state">手动模式已关闭</div>
+    </section>
+
+    <section class="panel stations-panel">
+      <h2>站点</h2>
+      <form id="station-form" class="entry-form">
+        <input name="name" placeholder="站点名称" required>
+        <input name="x" type="number" step="0.001" placeholder="X" required>
+        <input name="y" type="number" step="0.001" placeholder="Y" required>
+        <input name="yaw" type="number" step="0.001" placeholder="朝向" value="0">
+        <button type="submit">添加</button>
+        <button type="button" id="station-pick" class="pick-button" data-pick-target="station">地图取点</button>
+      </form>
+      <table>
+        <thead><tr><th>名称</th><th>X</th><th>Y</th><th>朝向</th><th></th></tr></thead>
+        <tbody id="station-list"></tbody>
+      </table>
+    </section>
+
+    <section class="panel markers-panel">
+      <h2>ArUco 标志位</h2>
+      <form id="marker-form" class="entry-form">
+        <input name="id" type="number" placeholder="编号" required>
+        <input name="size" type="number" step="0.001" placeholder="边长" required>
+        <input name="x" type="number" step="0.001" placeholder="X" required>
+        <input name="y" type="number" step="0.001" placeholder="Y" required>
+        <input name="yaw" type="number" step="0.001" placeholder="朝向" value="0">
+        <button type="submit">添加</button>
+        <button type="button" id="marker-pick" class="pick-button" data-pick-target="marker">地图取点</button>
+      </form>
+      <table>
+        <thead><tr><th>编号</th><th>边长</th><th>X</th><th>Y</th><th>朝向</th><th></th></tr></thead>
+        <tbody id="marker-list"></tbody>
+      </table>
+    </section>
+
+    <section class="panel route-panel">
+      <h2>路网</h2>
+      <div class="button-grid">
+        <button type="button" id="route-mode-add" title="在地图上点击放置路网节点">➕ 添加节点</button>
+        <button type="button" id="route-mode-link" title="依次点击两个节点连线">🔗 连接节点</button>
+        <button type="button" id="route-mode-delete" title="点击节点/连线进行删除">🗑 删除</button>
+        <button type="button" id="route-save">保存路网</button>
+        <button type="button" id="route-clear">清空路网</button>
+      </div>
+      <div id="route-hint" class="legend">编辑提示：添加节点时自动吸附 0.3 米内的站点（继承站点朝向）；改完点“保存路网”生效。节点数 0，边数 0</div>
+      <div class="legend">节点：紫色圆点（含名称与朝向）；连线：紫色折线。轨道路线导航将沿这些连线行驶</div>
+    </section>
+
+    <section class="panel localization-panel">
+      <h2>定位状态</h2>
+      <div class="localization-grid">
+        <div>
+          <span class="field-label">定位结果</span>
+          <span id="localization-state" class="badge offline">等待定位数据</span>
+        </div>
+        <div>
+          <span class="field-label">定位置信度</span>
+          <span id="localization-confidence">--</span>
+        </div>
+        <div>
+          <span class="field-label">当前位置</span>
+          <span id="current-position">--</span>
+        </div>
+        <div>
+          <span class="field-label">电池电量</span>
+          <span id="battery-voltage">--</span>
+        </div>
+        <div>
+          <span class="field-label">当前站点</span>
+          <span id="current-station">--</span>
+        </div>
+        <div>
+          <span class="field-label">导航目标</span>
+          <span id="navigation-target">--</span>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel imu-panel">
+      <h2>IMU 状态</h2>
+      <div class="imu-grid">
+        <div>
+          <span class="field-label">四元数</span>
+          <span id="imu-quaternion">--</span>
+        </div>
+        <div>
+          <span class="field-label">欧拉角</span>
+          <span id="imu-euler">--</span>
+        </div>
+        <div>
+          <span class="field-label">角速度</span>
+          <span id="imu-angular">--</span>
+        </div>
+        <div>
+          <span class="field-label">线加速度</span>
+          <span id="imu-linear">--</span>
+        </div>
+      </div>
+      <div class="inline-form">
+        <button id="imu-calibrate">IMU 标定</button>
+        <span id="imu-calibrate-result" class="imu-result">尚未标定</span>
+      </div>
+    </section>
+
+    <section class="panel status-panel">
+      <h2>状态</h2>
+      <pre id="status-log"></pre>
+    </section>
+  </main>
+  <script src="app.js?v=20260923d"></script>
+</body>
+</html>

@@ -1,0 +1,15 @@
+# 小车参数配置读写（Web 端参数配置页使用）
+#
+# command:
+#   list   列出全部参数组的 schema（中文标签/说明/类型）与当前值，忽略 section/values_json
+#   set    设置一个参数组，section 必填，values_json 为 {参数键: 新值} 的 JSON 字符串
+#   reset  把一个参数组恢复为默认值，section 必填；section 为 "all" 时恢复全部组
+#
+# data_json: list 时返回 {"sections": [...], "values": {...}} 的 JSON 字符串
+string command
+string section
+string values_json
+---
+bool success
+string message
+string data_json

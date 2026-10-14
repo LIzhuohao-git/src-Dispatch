@@ -1,0 +1,18 @@
+# 路网（拓扑 Graph）存取，供 Web 端画布编辑器使用。
+# command:
+#   list  - 读取整张路网，结果放在 response.graph_json
+#   save  - 用 request.graph_json 保存整张路网（服务端做结构与引用校验）
+#   clear - 清空路网
+# graph_json 结构:
+# {
+#   "nodes": [{"name": "n1", "x": 1.2, "y": 0.5, "yaw": 0.0, "station": "kitchen"}],
+#   "edges": [{"a": "n1", "b": "n2", "via": [[2.0, 0.5]]}]
+# }
+# node.station 为可选字段：该节点绑定到某站点，route 模式按站点名导航时匹配它；
+# edge.via 为可选的中间拐点（折线走廊），跟随器沿折线行驶。
+string command
+string graph_json
+---
+bool success
+string message
+string graph_json

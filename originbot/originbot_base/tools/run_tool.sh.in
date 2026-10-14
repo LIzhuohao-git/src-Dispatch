@@ -1,0 +1,21 @@
+#!/bin/bash
+# originbot_base 工具脚本启动器（由 CMake configure_file 生成，请勿手工修改）。
+#
+# 为什么需要这一层：ROS2 的 `ros2 run <pkg> <name>` 只在 lib/<pkg>/ 目录下
+# 查找可执行文件，而脚本本体装在 share/<pkg>/tools/。这里做一层 exec 转发，
+# 让 `ros2 run` 可用，同时脚本本体仍保持"可以直接拷走单独用"的形态。
+set -euo pipefail
+
+TOOLS_DIR="@TOOLS_DIR@"
+SCRIPT="@SCRIPT@"
+
+# 这里用 -f 而不是 -x：脚本本体由 install(DIRECTORY ... USE_SOURCE_PERMISSIONS)
+# 按源码权限（644）装进 share/，通常没有可执行位；而下面是用 python3 解释执行，
+# 根本不需要可执行位。用 -x 会把"存在但不可执行"误判成"找不到"。
+if [ ! -f "${TOOLS_DIR}/${SCRIPT}" ]; then
+    echo "错误：找不到工具脚本 ${TOOLS_DIR}/${SCRIPT}" >&2
+    echo "请先执行 colcon build 重新安装 originbot_base。" >&2
+    exit 1
+fi
+
+exec python3 "${TOOLS_DIR}/${SCRIPT}" "$@"

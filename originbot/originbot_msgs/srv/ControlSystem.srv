@@ -1,0 +1,6 @@
+# subsystem: base, localization, aruco, mapping, navigation
+string subsystem
+bool enable
+---
+bool success
+string message

@@ -1,0 +1,13 @@
+# command: add, update, delete, list, clear
+string command
+string name
+float64 x
+float64 y
+float64 yaw
+---
+bool success
+string message
+string[] names
+float64[] x
+float64[] y
+float64[] yaw

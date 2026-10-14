@@ -1,0 +1,814 @@
+:root {
+  --bg: #f5f7fa;
+  --panel: #ffffff;
+  --border: #d8dee8;
+  --text: #18212f;
+  --muted: #697586;
+  --accent: #1677ff;
+  --danger: #d4380d;
+  --ok: #389e0d;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+/* 参数配置页用竖向 flex 列：内容不足一屏时，吸底的状态栏靠
+   .status-standalone 的 margin-top:auto 也能贴到视口底部。
+   只作用于参数页（控制台内容永远超一屏，不需要，也就不受这里的
+   flex 项目尺寸规则影响）。 */
+body.params-page {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+}
+
+header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  padding: 14px 20px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+  /* 标题栏吸顶：滚动时保持可见 */
+  position: sticky;
+  top: 0;
+  z-index: 40;
+}
+
+h1 { font-size: 20px; margin: 0; }
+h2 { font-size: 15px; margin: 0 0 12px; }
+
+button, input, select {
+  height: 36px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0 10px;
+  font: inherit;
+}
+
+button {
+  cursor: pointer;
+  background: #f7f9fc;
+}
+
+button:hover { border-color: var(--accent); color: var(--accent); }
+
+/* 危险操作（安全关机）：红色底、白字，hover 加深 */
+.danger-button {
+  background: #e02020;
+  border-color: #b71c1c;
+  color: #ffffff;
+}
+.danger-button:hover {
+  background: #c62828;
+  border-color: #b71c1c;
+  color: #ffffff;
+}
+
+/* 顶部安全关机按钮：加大加粗 + 红色渐变 + 投影，醒目突出 */
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.shutdown-top {
+  background: linear-gradient(180deg, #ff5a52, #e02020);
+  border: 1px solid #b71c1c;
+  color: #ffffff;
+  font-weight: 700;
+  font-size: 15px;
+  letter-spacing: 1px;
+  padding: 0 18px;
+  box-shadow: 0 2px 10px rgba(224, 32, 32, 0.40);
+}
+.shutdown-top:hover {
+  background: linear-gradient(180deg, #ff7067, #c62828);
+  border-color: #b71c1c;
+  color: #ffffff;
+  box-shadow: 0 3px 14px rgba(224, 32, 32, 0.55);
+}
+
+.pick-button.active {
+  border-color: var(--accent);
+  color: #ffffff;
+  background: var(--accent);
+}
+
+main {
+  display: grid;
+  grid-template-columns: repeat(12, minmax(0, 1fr));
+  gap: 16px;
+  padding: 20px;
+  max-width: 1680px;
+  margin: 0 auto;
+}
+
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 16px;
+  min-width: 0;
+}
+
+.map-panel { grid-column: span 8; }
+/* 地图右侧那一列：摄像头在上、导航在下（8+4=12 正好一行）。
+   两块放进同一个 flex 列里竖向排列，而不是各自占一格 —— 这样导航就落在
+   地图右边、摄像头正下方那块位置。 */
+.map-side {
+  grid-column: span 4;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+}
+.keyboard-panel,
+.route-panel,
+.localization-panel,
+.imu-panel { grid-column: span 6; }
+.stations-panel,
+.markers-panel {
+  grid-column: span 6;
+  overflow-x: auto;
+}
+
+#map-canvas {
+  display: block;
+  width: 100%;
+  /* 用固定高度当"取景框"：地图缩放/平移由 app.js 在画布内部做变换绘制。
+     不能再用 object-fit:contain —— 那会把位图缩进盒子，滚轮放大了也会被
+     自动缩回来，看上去毫无变化。 */
+  height: 78vh;
+  background: #eef1f5;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: crosshair;
+  user-select: none;
+  touch-action: none; /* 触屏拖动时别把页面一起滚了 */
+}
+
+.legend { color: var(--muted); margin-top: 6px; }
+.pick-hint { min-height: 18px; }
+
+#camera-image {
+  display: block;
+  width: 100%;
+  height: auto;
+  min-height: 320px;
+  max-height: 520px;
+  object-fit: contain;
+  background: #101722;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.camera-viewport {
+  position: relative;
+}
+
+.camera-placeholder {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  color: var(--muted);
+  background: #101722;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  min-height: 320px;
+  pointer-events: none;
+}
+
+.camera-placeholder.hidden {
+  display: none;
+}
+
+.aruco-toast {
+  position: absolute;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 10;
+  padding: 8px 16px;
+  border-radius: 999px;
+  background: var(--ok);
+  color: #ffffff;
+  font-weight: 600;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.35);
+  white-space: nowrap;
+}
+
+.aruco-toast.hidden {
+  display: none;
+}
+
+.camera-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+  color: var(--muted);
+}
+
+.button-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+/* 模式类按钮激活态（路网添加/连接/删除等）：蓝底白字明确提示"已按下"，
+   并覆盖全局 hover 规则，避免激活后 hover 变成蓝底蓝字看不清 */
+.button-grid button.active,
+.button-grid button.active:hover {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #ffffff;
+}
+
+.inline-form, .entry-form, #connection-form {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+  margin-top: 12px;
+}
+
+.entry-form input { width: 88px; }
+.entry-form input[name="name"] { width: 120px; }
+#mapping-algorithm { min-width: 170px; }
+#connection-form { margin: 0; }
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 12px;
+}
+
+th, td {
+  text-align: left;
+  padding: 7px 6px;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+
+td button { height: 30px; padding: 0 8px; }
+
+.status-panel {
+  grid-column: 1 / -1;
+  /* 状态输出栏吸底：滚动时钉在视口底部，方便一直盯着日志。
+     用 sticky 而不是 fixed —— sticky 仍占文档流的位置，不会盖住
+     底下被滚过去的内容，页面滚到底时它自然回到原位。
+     --statusbar-h 由 layout.js 量出，供 .params-actions 让位。 */
+  position: sticky;
+  bottom: 0;
+  z-index: 20;
+  box-shadow: 0 -2px 12px rgba(24, 33, 47, 0.10);
+}
+#status-log {
+  height: 150px;
+  overflow: auto;
+  margin: 0;
+  padding: 10px;
+  background: #101722;
+  color: #dbe5f1;
+  border-radius: 6px;
+  font: 12px/1.5 ui-monospace, "Cascadia Code", monospace;
+}
+
+.badge {
+  display: inline-block;
+  padding: 3px 8px;
+  border-radius: 999px;
+  font-size: 12px;
+  margin-left: 8px;
+}
+
+.offline { background: #fff1f0; color: var(--danger); }
+.online { background: #f6ffed; color: var(--ok); }
+
+@media (max-width: 1180px) {
+  .map-panel,
+  .map-side { grid-column: span 12; }
+}
+
+@media (max-width: 760px) {
+  main { grid-template-columns: 1fr; }
+  /* .map-side 必须一起写上：它在上面的 1180 断点里是 span 12，
+     若不覆盖，1 列的网格里放一个 span 12 的项目会让浏览器凭空生成
+     11 个隐式列，结果每个面板都被挤成一竖条（手机上的错版就是这么来的）。 */
+  .map-panel,
+  .map-side,
+  .camera-panel,
+  .system-panel,
+  .keyboard-panel,
+  .stations-panel,
+  .markers-panel,
+  .navigation-panel,
+  .route-panel,
+  .localization-panel,
+  .imu-panel,
+  .status-panel { grid-column: span 1; }
+  header { align-items: stretch; flex-direction: column; }
+  #connection-form input { flex: 1; }
+}
+
+.manual-controls {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.manual-controls label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+}
+
+.manual-controls input {
+  width: 90px;
+}
+
+.keypad-hint {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 12px;
+  color: var(--muted);
+}
+
+.keycap {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 28px;
+  height: 28px;
+  padding: 0 7px;
+  border: 1px solid var(--border);
+  border-bottom-width: 3px;
+  border-radius: 6px;
+  background: #f7f9fc;
+  font: 12px/1 ui-monospace, "Cascadia Code", monospace;
+}
+
+.manual-state {
+  margin-top: 12px;
+  color: var(--danger);
+  font-weight: 600;
+}
+
+.manual-state.active {
+  color: var(--ok);
+}
+
+/* ---------- 手动控制：键盘 / 遥杆切换 ---------- */
+
+.hidden {
+  display: none;
+}
+
+.control-mode-switch {
+  display: inline-flex;
+  margin-top: 12px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  overflow: hidden;
+  background: #f1f4f9;
+}
+
+.control-mode-switch button {
+  border: none;
+  background: transparent;
+  padding: 8px 18px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--muted);
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.control-mode-switch button + button {
+  border-left: 1px solid var(--border);
+}
+
+.control-mode-switch button.active {
+  background: var(--accent, #2563eb);
+  color: #ffffff;
+}
+
+.joystick-hint {
+  margin-top: 10px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.joystick-pad {
+  position: relative;
+  width: 170px;
+  height: 170px;
+  margin-top: 14px;
+  border-radius: 50%;
+  background: radial-gradient(circle at 50% 42%, #f8fafc 0%, #e8edf5 72%, #dde4ee 100%);
+  border: 1px solid var(--border);
+  box-shadow: inset 0 2px 10px rgba(15, 30, 60, 0.08);
+  touch-action: none; /* 触屏拖动时阻止页面滚动 */
+  cursor: grab;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.joystick-pad.active {
+  cursor: grabbing;
+  border-color: var(--accent, #2563eb);
+  box-shadow: inset 0 2px 10px rgba(15, 30, 60, 0.08),
+    0 0 0 3px rgba(37, 99, 235, 0.15);
+}
+
+.joystick-ring {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 62%;
+  height: 62%;
+  transform: translate(-50%, -50%);
+  border: 1px dashed var(--border);
+  border-radius: 50%;
+  pointer-events: none;
+}
+
+.joystick-knob {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 62px;
+  height: 62px;
+  margin: -31px 0 0 -31px; /* 居中，translate 只负责偏移量 */
+  border-radius: 50%;
+  background: radial-gradient(circle at 36% 30%, #6f8ffb, #2b5cd9 70%);
+  box-shadow: 0 3px 10px rgba(20, 45, 110, 0.35);
+  pointer-events: none; /* 指针事件统一由 pad 处理 */
+}
+
+.joystick-pad::before,
+.joystick-pad::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.joystick-pad::before {
+  content: "前";
+  transform: translate(-50%, calc(-50% - 68px));
+}
+
+.joystick-pad::after {
+  content: "后";
+  transform: translate(-50%, calc(-50% + 68px));
+}
+
+.localization-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px 18px;
+}
+
+.imu-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px 18px;
+}
+
+.localization-grid > div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 0;
+}
+
+.field-label {
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+#current-position,
+#current-station,
+#navigation-target,
+#imu-quaternion,
+#imu-euler,
+#imu-angular,
+#imu-linear {
+  overflow-wrap: anywhere;
+  text-align: right;
+}
+
+.imu-result {
+  color: var(--muted);
+}
+
+@media (max-width: 900px) {
+  .localization-grid { grid-template-columns: 1fr; }
+}
+
+#battery-voltage.battery-low {
+  color: #ff4d4f;
+  font-weight: bold;
+}
+
+/* ---------------- 参数配置页 ---------------- */
+
+.nav-link {
+  margin-left: 12px;
+  color: var(--accent);
+  text-decoration: none;
+}
+.nav-link:hover { text-decoration: underline; }
+
+/* 顶部工具条：吸顶，方便随时导出/导入。
+   top 用 --header-h（标题栏高度，由 layout.js 量出）而不是 0 ——
+   否则会和吸顶的 <header> 叠在一起。 */
+.params-toolbar {
+  position: sticky;
+  top: var(--header-h, 0px);
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 12px 20px;
+  background: rgba(245, 247, 250, 0.92);
+  backdrop-filter: blur(6px);
+  border-bottom: 1px solid var(--border);
+}
+
+/* 参数卡片：单列居中，卡片带头部色带与投影。
+   width:100% 不能省：作为 flex 项目时左右 auto 边距会取消横向 stretch，
+   不写宽度就只按内容宽撑开，卡片列会比以前窄。 */
+#params-main {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 16px 20px 20px;
+  width: 100%;
+  max-width: 1200px;
+  margin: 0 auto;
+}
+
+.params-panel {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: 0 1px 4px rgba(24, 33, 47, 0.06);
+  min-width: 0;
+  /* 注意：不能加 overflow:hidden，否则底部 sticky 操作条失效 */
+
+}
+
+.params-panel-header {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 14px 18px 12px;
+  background: linear-gradient(180deg, #fbfcfe, #f2f6fb);
+  border-bottom: 1px solid var(--border);
+  border-radius: 11px 11px 0 0;
+}
+
+.params-panel-header h2 {
+  margin: 0;
+  font-size: 16px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* 标题前的强调色块 */
+.params-panel-header h2::before {
+  content: "";
+  width: 4px;
+  height: 16px;
+  border-radius: 2px;
+  background: var(--accent);
+}
+
+.params-apply {
+  margin: 0;
+  padding-left: 12px;
+  color: var(--muted);
+  font-size: 12.5px;
+}
+
+.params-body {
+  padding: 16px 18px 6px;
+}
+
+/* 子分组标题：文字 + 延伸分隔线 */
+.params-group {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 16px 0 10px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--accent);
+}
+.params-body .params-group:first-child { margin-top: 0; }
+.params-group::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--border);
+}
+
+.params-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px 14px;
+}
+
+/* 单个参数行：浅色圆角底，左信息右控件，hover 高亮 */
+.param-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+  background: #f8fafc;
+  border: 1px solid #edf1f6;
+  border-radius: 10px;
+  padding: 9px 12px;
+}
+.param-row:hover {
+  background: #f4f8fd;
+  border-color: #cdd9ea;
+}
+
+.param-info { min-width: 0; }
+
+.param-label {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 6px;
+  color: var(--text);
+  font-weight: 500;
+}
+
+/* 原始英文参数名徽章：窄屏时自动换行，不挤压右侧控件 */
+.param-key {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Courier New", monospace;
+  font-size: 11.5px;
+  font-weight: 400;
+  line-height: 1.6;
+  color: #64748b;
+  background: #eef2f7;
+  border: 1px solid #e2e8f0;
+  border-radius: 5px;
+  padding: 0 5px;
+  /* 短参数名保持单行；超长名（如 EKF 的 imu0_*_rejection_threshold）
+     在徽章内部折行，避免窄屏横向溢出 */
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
+.param-note {
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.param-row input[type="number"] {
+  width: 110px;
+  text-align: right;
+  flex-shrink: 0;
+}
+
+.param-row select {
+  flex-shrink: 0;
+  min-width: 150px;
+}
+
+/* 开关（复选框美化） */
+.param-bool {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+  cursor: pointer;
+}
+.param-bool input {
+  position: absolute;
+  width: 0;
+  height: 0;
+  opacity: 0;
+}
+.param-switch {
+  width: 40px;
+  height: 22px;
+  border-radius: 999px;
+  background: #c9d3e0;
+  position: relative;
+  transition: background 0.2s;
+  flex-shrink: 0;
+}
+.param-switch::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #ffffff;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
+  transition: transform 0.2s;
+}
+.param-bool input:checked + .param-switch { background: var(--accent); }
+.param-bool input:checked + .param-switch::after { transform: translateX(18px); }
+.param-bool input:focus-visible + .param-switch {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.param-bool-text {
+  min-width: 2em;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+/* 分节操作条：吸附在视口底部，长卡片（如 Nav2）滚到哪都能保存。
+   底部要让开吸底的状态栏，否则两者叠在一起会把保存按钮盖住；
+   z-index 高于状态栏，万一量测失败也优先保证按钮可点。 */
+.params-actions {
+  position: sticky;
+  bottom: calc(var(--statusbar-h, 0px) + 12px);
+  z-index: 25;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin: 14px 18px 16px;
+  padding: 10px 12px;
+  background: rgba(255, 255, 255, 0.92);
+  backdrop-filter: blur(6px);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 4px 14px rgba(24, 33, 47, 0.10);
+}
+
+.primary-button {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #ffffff;
+  font-weight: 600;
+}
+.primary-button:hover {
+  background: #0e5fd8;
+  border-color: #0e5fd8;
+  color: #ffffff;
+}
+
+.danger-soft {
+  background: #fff1f0;
+  border-color: #ffa39e;
+  color: var(--danger);
+}
+.danger-soft:hover {
+  background: #ffd8d4;
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+.status-standalone {
+  /* width:100% 不能省：作为 flex 项目的左右 auto 边距会取消 stretch，
+     不写宽度就会缩成内容宽的一小条 */
+  width: 100%;
+  max-width: 1200px;
+  /* 顶部 auto：参数卡片少、页面不足一屏时把它推到视口底部（配合 body 的
+     竖向 flex）；左右 auto 保持与控制台同一居中列。 */
+  margin: auto auto 20px;
+}
+
+@media (max-width: 900px) {
+  .params-grid { grid-template-columns: 1fr; }
+  .param-row { flex-wrap: wrap; }
+  .param-row input[type="number"] { width: 100%; text-align: left; }
+  .param-row select { width: 100%; }
+}

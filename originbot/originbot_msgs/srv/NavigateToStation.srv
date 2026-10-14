@@ -1,0 +1,8 @@
+# 导航到站点。
+# mode: free=自由避障导航（Nav2 DWB，默认）；route=轨道路线导航（沿 routes.json 路网行驶，
+#       遇动态障碍停车等待，消除后继续）。留空按 free 处理，向后兼容旧前端。
+string station_name
+string mode
+---
+bool accepted
+string message

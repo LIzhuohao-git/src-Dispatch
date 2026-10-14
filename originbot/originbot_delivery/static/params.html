@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>小车参数配置 - OriginBot 送餐机器人</title>
+  <link rel="stylesheet" href="style.css?v=20260923d">
+  <script src="https://cdn.jsdelivr.net/npm/roslib@1.4.0/build/roslib.min.js"></script>
+  <script src="layout.js?v=20260922a"></script>
+</head>
+<body class="params-page">
+  <header>
+    <div>
+      <h1>小车参数配置</h1>
+      <a class="nav-link" href="index.html">返回控制台</a>
+      <span id="connection-state" class="badge offline">离线</span>
+    </div>
+    <form id="connection-form">
+      <input id="ros-host" value="" aria-label="ROS Bridge 地址">
+      <input id="ros-port" value="9090" type="number" aria-label="ROS Bridge 端口">
+      <button type="submit">连接</button>
+    </form>
+  </header>
+
+  <div class="params-toolbar">
+    <button type="button" id="export-params">导出参数</button>
+    <button type="button" id="import-params">导入参数</button>
+    <input type="file" id="import-file" accept="application/json,.json" hidden>
+    <button type="button" id="reset-all" class="danger-soft">恢复全部默认</button>
+    <span class="legend">保存后按各分区提示重启对应子系统即可生效；下次开机自启动自动加载</span>
+  </div>
+
+  <main id="params-main"></main>
+
+  <section class="panel status-panel status-standalone">
+    <h2>状态</h2>
+    <pre id="status-log"></pre>
+  </section>
+
+  <script src="params.js?v=20260921b"></script>
+</body>
+</html>

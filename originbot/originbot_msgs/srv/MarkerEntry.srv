@@ -1,0 +1,15 @@
+# command: add, update, delete, list, clear
+string command
+int32 marker_id
+float64 marker_size
+float64 x
+float64 y
+float64 yaw
+---
+bool success
+string message
+int32[] marker_ids
+float64[] marker_sizes
+float64[] x
+float64[] y
+float64[] yaw

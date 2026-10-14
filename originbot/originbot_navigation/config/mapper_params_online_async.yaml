@@ -1,0 +1,85 @@
+# slam_toolbox (online async) 建图参数 —— OriginBot / RDK X5 / ROS2 Humble
+#
+# 与 Cartographer 方案相比：
+#   - 只用「轮式里程计 + /scan」做 scan-matching，不依赖 IMU（当前底盘 IMU 标定偏大/噪声，
+#     已关闭，slam_toolbox 天然不需要）。
+#   - 发布 map->odom TF 与 /map 话题，行为与 cartographer 一致，AMCL 交接流程无需改动。
+#
+# 需要按现场实测微调的三个量：
+#   1. max_laser_range：STL06N 实测 ~12m，驱动/本文件/Nav2 三处已统一为 12.0，减少远场噪声。
+#   2. minimum_travel_distance / minimum_travel_heading：越小图越密、回环越好，但更吃 CPU。
+#   3. resolution：已从 0.05 调到 0.10，配合 STL06N ~0.72° 角分辨率，避免远墙断点；与 Nav2 costmap 保持一致。
+
+slam_toolbox:
+  ros__parameters:
+
+    # ---------------- 求解器 ----------------
+    solver_plugin: solver_plugins::CeresSolver
+    ceres_linear_solver: SPARSE_NORMAL_CHOLESKY
+    ceres_preconditioner: SCHUR_JACOBI
+    ceres_trust_strategy: LEVENBERG_MARQUARDT
+    ceres_dogleg_type: TRADITIONAL_DOGLEG
+    ceres_loss_function: None
+
+    # ---------------- ROS 帧/话题 ----------------
+    odom_frame: odom
+    map_frame: map
+    base_frame: base_footprint
+    scan_topic: /scan
+    use_map_saver: true
+    mode: mapping # localization
+
+    # 建图模式：不加载已有地图、不从 dock 起点继续（二者互斥，用 pose 优先）
+    #map_file_name: test_steve
+    #map_start_pose: [0.0, 0.0, 0.0]
+    #map_start_at_dock: true
+
+    debug_logging: false
+    throttle_scans: 1
+    transform_publish_period: 0.02  # 0 则永不发布 map->odom；必须保持发布，AMCL 交接依赖它
+    map_update_interval: 2.0        # /map 栅格地图刷新周期（秒）
+    resolution: 0.10
+    min_laser_range: 0.1            # 与 STL06N 驱动 min_range=0.1 对齐，忽略盲区点
+    max_laser_range: 20.0           # 与 STL06N 声明一致；实测若只到 ~12m，请下调到 12.0
+    minimum_time_interval: 0.1      # 相邻两次 scan 处理的最小时间间隔（秒）
+    transform_timeout: 0.2
+    tf_buffer_duration: 30.
+    stack_size_to_use: 40000000     # 序列化大地图需要更大栈
+    enable_interactive_mode: true
+
+    # ---------------- 通用参数 ----------------
+    use_scan_matching: true
+    use_scan_barycenter: true
+    minimum_travel_distance: 0.15   # 前进 0.15m 才新增一帧（小空间调密，提升帧间对齐）
+    minimum_travel_heading: 0.2     # 转向 0.2rad 才新增一帧（小空间调密）
+    scan_buffer_size: 10
+    scan_buffer_maximum_scan_distance: 10.0
+    link_match_minimum_response_fine: 0.1
+    link_scan_maximum_distance: 1.5
+    loop_search_maximum_distance: 3.0
+    do_loop_closing: true
+    loop_match_minimum_chain_size: 5   # 回环最小链长（默认 10，小空间调小更容易触发回环）
+    loop_match_maximum_variance_coarse: 3.0
+    loop_match_minimum_response_coarse: 0.35
+    loop_match_minimum_response_fine: 0.45
+
+    # ---------------- 相关搜索参数 ----------------
+    correlation_search_space_dimension: 0.5
+    correlation_search_space_resolution: 0.01
+    correlation_search_space_smear_deviation: 0.1
+
+    # ---------------- 回环相关搜索参数 ----------------
+    loop_search_space_dimension: 8.0
+    loop_search_space_resolution: 0.05
+    loop_search_space_smear_deviation: 0.03
+
+    # ---------------- 扫描匹配参数 ----------------
+    distance_variance_penalty: 0.5
+    angle_variance_penalty: 1.0
+
+    fine_search_angle_offset: 0.00349
+    coarse_search_angle_offset: 0.349
+    coarse_angle_resolution: 0.0349
+    minimum_angle_penalty: 0.9
+    minimum_distance_penalty: 0.5
+    use_response_expansion: true

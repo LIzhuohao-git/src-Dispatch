@@ -1,0 +1,7 @@
+# command: list / open / close
+string command
+string map_name
+---
+string[] map_names
+bool success
+string message

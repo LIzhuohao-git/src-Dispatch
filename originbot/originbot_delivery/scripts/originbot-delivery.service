@@ -1,0 +1,23 @@
+# originbot_delivery 开机自启动服务模板。
+# 请勿直接复制到 /etc/systemd/system，应使用 install_autostart.sh 安装，
+# 脚本会把 @ROS_SETUP@ 等占位符替换为实际路径。
+[Unit]
+Description=OriginBot Delivery Bringup
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=@RUN_USER@
+Environment=HOME=@RUN_HOME@
+WorkingDirectory=@WORKSPACE@
+ExecStart=/bin/bash -c 'source @ROS_SETUP@ && [ -f /opt/tros/humble/setup.bash ] && source /opt/tros/humble/setup.bash; source @WS_SETUP@ && exec ros2 launch originbot_delivery delivery_bringup.launch.py'
+Restart=on-failure
+RestartSec=5
+KillMode=mixed
+TimeoutStopSec=20
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
